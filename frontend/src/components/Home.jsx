@@ -1,27 +1,37 @@
-import React, {useEffect, useState} from 'react'
-import Sidebar from './Sidebar'
-import ChatBox from './ChatBox'
-import EmptyState from './EmptyState'
-import { useNavigate } from 'react-router-dom'
+import React, {useEffect, useState} from 'react';
+import Sidebar from './Sidebar';
+import ChatBox from './ChatBox';
+import EmptyState from './EmptyState';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import toast from 'react-hot-toast'
+import toast from 'react-hot-toast';
 import { io } from 'socket.io-client';
 import { jwtDecode } from 'jwt-decode';
 
 const Home = () => {
   const [selectedUser, setSelectedUser] = useState(null);
-  const navigate = useNavigate();
   const [users, setUsers] = useState([]);
   const [socket, setSocket] = useState(null);
   const [loading, setLoading] = useState(true);
   const [onlineUsers, setOnlineUsers] = useState(new Set()); // Track online users
+  const [currentUser, setCurrentUser] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if(!token){
-      navigate('/login')
-    }else{
-      try{
+    if (!token) {
+      navigate('/login');
+    } else {
+      try {
+        // Get current user info
+        const decoded = jwtDecode(token);
+        setCurrentUser({
+          id: decoded.userId,
+          email: decoded.email,
+          firstName: decoded.firstName,
+          lastName: decoded.lastName
+        });
+
         const fetchData = async () => {
           const { data } = await axios.get("http://localhost:8000/api/user/exclude_user/", {
             headers: {
@@ -29,17 +39,17 @@ const Home = () => {
             },
           });
           setUsers(data);
-          console.log("data from exclude_user api : ", data)
-        }
+          console.log("data from exclude_user api : ", data);
+        };
         fetchData();
-      } catch(error){
+      } catch (error) {
         console.log(error);
         toast.error(`Error fetching users`);
-      } finally{
+      } finally {
         setLoading(false);
       }
     }
-  }, [navigate])
+  }, [navigate]);
 
   // Initialize Socket.IO connection
   useEffect(() => {
@@ -52,7 +62,7 @@ const Home = () => {
       });
 
       newSocket.on('connect', () => {
-        console.log('Connected to server');
+        console.log('Connected to chat server');
         toast.success('Connected to chat server');
         
         // Get current online users when connected
@@ -68,9 +78,11 @@ const Home = () => {
         console.log('Disconnected from server');
         toast.error('Disconnected from chat server');
       });
+      
 
       // Handle online status events
       newSocket.on('user_online', (data) => {
+        console.log("data in user_online : ", data);
         console.log(`User ${data.userId} came online`);
         setOnlineUsers(prev => new Set([...prev, data.userId]));
         
@@ -100,14 +112,35 @@ const Home = () => {
           });
         }
       });
+      // added this code for realTime new message population when receiver has already opened sender's chat - start
+      newSocket.on('receive_message', (data) => {
+        console.log("New message received via socket:", data);
+        // seems here we should emit message_delivered event
+        window.dispatchEvent(new CustomEvent('new_message', { detail: data }));
+      });
+      // added this code for realTime new message population when receiver has already opened sender's chat - end
 
       newSocket.on('online_users', (data) => {
         console.log('Online users:', data.users);
         setOnlineUsers(new Set(data.users));
       });
 
+      // Message-related events for status updates
+      newSocket.on('message_status_update', (data) => {
+        console.log("data in message_status_update : ", data);
+        // Broadcast to ChatBox component via custom events
+        window.dispatchEvent(new CustomEvent('message_status_update', { detail: data }));
+      });
+
+      newSocket.on('messages_marked_read', (data) => {
+        console.log("data in messages_marked_read : ", data);
+        // Broadcast to ChatBox component via custom events
+        window.dispatchEvent(new CustomEvent('messages_marked_read', { detail: data }));
+      });
+
       // Handle new message notifications
       newSocket.on('new_message_notification', (data) => {
+        console.log("data in new_message_notification : ", data);
         // Only show notification if not currently chatting with this user
         if (!selectedUser || selectedUser.id !== data.chatId.split('_').find(id => id !== newSocket.userId)) {
           toast(`New message from ${data.from}: ${data.message}`, {
@@ -123,7 +156,7 @@ const Home = () => {
         newSocket.close();
       };
     }
-  }, [users, selectedUser]);
+  }, [users]);
 
   // Handle user selection and join chat
   useEffect(() => {
@@ -139,10 +172,7 @@ const Home = () => {
       const chatId = `${[userId, selectedUser.id].sort().join('_')}`;
       console.log("chatId in Home: ", chatId);
       
-      socket.emit('join_chat', {
-        chatId: chatId,
-        receiverId: selectedUser.id
-      });
+      socket.emit('join_chat', chatId);
       
       console.log(`Joining chat: ${chatId}`);
     }
@@ -150,6 +180,48 @@ const Home = () => {
 
   const handleUserClick = (user) => {
     setSelectedUser(user);
+  };
+
+  // Send message function to be passed to ChatBox
+  const sendMessage = async (messageData) => {
+    console.log("messageData in sendMessage method : ", messageData);
+    console.log("currentUser in sendMessage method : ", currentUser);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(
+        'http://localhost:8000/api/chat/send',
+        messageData,
+        {
+          headers: { Authorization: `Token ${token}` }
+        }
+      );
+
+      console.log("response in sendMessage method : ", response);
+
+      // Check if receiver is online and emit delivered status
+      if (onlineUsers.has(messageData.receiverId)) {
+        socket.emit('message_delivered', {
+          messageId: response.data.data._id,
+          senderId: messageData.senderId || currentUser.id
+        });
+      }
+
+      return response.data.data;
+    } catch (error) {
+      console.error('Error sending message:', error);
+      throw error;
+    }
+  };
+
+  // Mark messages as read function
+  const markMessagesAsRead = (chatId, senderId) => {
+    if (socket && currentUser) {
+      socket.emit('messages_read', {
+        chatId: chatId,
+        userId: currentUser.id,
+        senderId: senderId
+      });
+    }
   };
 
   return (
@@ -170,8 +242,10 @@ const Home = () => {
               <ChatBox 
                 selectedUser={selectedUser} 
                 onUserClick={handleUserClick} 
-                socket={socket}
-                isUserOnline={onlineUsers.has(selectedUser.id)} // Pass online status
+                currentUser={currentUser}
+                sendMessage={sendMessage}
+                markMessagesAsRead={markMessagesAsRead}
+                isUserOnline={onlineUsers.has(selectedUser.id)}
               />
             ) : (
               <EmptyState />
@@ -180,7 +254,7 @@ const Home = () => {
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default Home
+export default Home;

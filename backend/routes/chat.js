@@ -145,9 +145,11 @@ router.get('/messages/:chatId', authenticateToken, async (req, res) => {
       {
         chatId: chatId,
         receiver: userId,
-        isRead: false
+        isRead: false, // might be we can remove it as it's by default set to false
+        status: { $ne: 'read' }
       },
       {
+        status: 'read',
         isRead: true,
         readAt: new Date()
       }
@@ -171,9 +173,10 @@ router.get('/messages/:chatId', authenticateToken, async (req, res) => {
   }
 });
 
-// Send Message (REST endpoint - also handled via Socket.io)
+// Send Message (REST endpoint) — SAVE + EMIT SOCKET EVENTS
 router.post('/send', authenticateToken, async (req, res) => {
   try {
+    console.log("Inside /send route");
     const { receiverId, content, chatId } = req.body;
     const senderId = req.user._id;
 
@@ -193,12 +196,13 @@ router.post('/send', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Receiver not found' });
     }
 
-    // Create message
+    // Create message with initial status
     const message = new Message({
       sender: senderId,
       receiver: receiverId,
       content: content.trim(),
-      chatId: chatId
+      chatId: chatId,
+      status: 'sent' // Initial status
     });
     console.log("message : ", message);
 
@@ -210,6 +214,7 @@ router.post('/send', authenticateToken, async (req, res) => {
     let chat = await Chat.findOne({
       participants: { $all: [senderId, receiverId] }
     });
+    console.log("chat : ", chat);
 
     // If chat doesn't exist, create it
     if (!chat) {
@@ -224,6 +229,28 @@ router.post('/send', authenticateToken, async (req, res) => {
       chat.lastMessage = message._id;
       chat.lastActivity = new Date();
       await chat.save();
+    }
+
+    // Emit the new message via socket
+    const io = req.app.get('io');
+    io.to(chatId).emit('receive_message', message);
+    io.to(receiverId.toString()).emit('new_message_notification', {
+      from: `${message.sender.firstName} ${message.sender.lastName}`,
+      message: message.content,
+      chatId: chatId
+    });
+
+    // Check if receiver is online and mark as delivered
+    const receiverSockets = await io.in(receiverId).fetchSockets();
+    if (receiverSockets.length > 0) {
+      message.status = 'delivered';
+      await message.save();
+      
+      // Notify sender about delivery
+      io.to(senderId).emit('message_status_update', {
+        messageId: message._id,
+        status: 'delivered'
+      });
     }
     
     res.status(201).json({
@@ -250,6 +277,7 @@ router.put('/mark-read/:chatId', authenticateToken, async (req, res) => {
         isRead: false
       },
       {
+        status: 'read',
         isRead: true,
         readAt: new Date()
       }

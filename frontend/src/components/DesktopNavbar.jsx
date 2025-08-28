@@ -6,11 +6,46 @@ import '../css/style.css';
 import { Link } from 'react-router-dom';
 
 class DesktopNavbar extends Component {
-  handleLogout = () => {
-    localStorage.removeItem('token');
-    toast.success('Logout successful');
-    window.location.href = '/login';
+  // handleLogout = () => {
+  //   localStorage.removeItem('token');
+  //   toast.success('Logout successful');
+  //   window.location.href = '/login';
+  // };
+  handleLogout = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        toast.error('You are not logged in!');
+        window.location.href = '/login';
+        return;
+      }
+  
+      // Call the backend logout API
+      const response = await fetch('http://localhost:8000/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`, // Send token for authentication
+        },
+      });
+  
+      const data = await response.json();
+  
+      if (response.ok) {
+        // ✅ Successfully logged out on the backend
+        localStorage.removeItem('token');
+        toast.success(data.message || 'Logout successful');
+        window.location.href = '/login';
+        console.log("logout response : ", data);
+      } else {
+        toast.error(data.message || 'Failed to logout');
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+      toast.error('Something went wrong. Try again!');
+    }
   };
+  
 
   render() {
     return (

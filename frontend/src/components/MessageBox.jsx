@@ -1,9 +1,11 @@
 import React from 'react';
 import { parseISO, format } from 'date-fns';
 import { FaUser } from 'react-icons/fa';
+import MessageStatus from './MessageStatus';
 
 const MessageBox = ({ data, selectedUser }) => {
-  const isOwn = (data.sender._id === selectedUser.id) ? 0 : 1;
+  // const isOwn = (data.sender._id === selectedUser.id) ? 0 : 1;
+  const isOwn = data.sender._id !== selectedUser.id;
 
   const container = `d-flex ${isOwn ? 'justify-content-end' : ''} p-3`;
   const avatar = isOwn ? 'order-2' : '';
@@ -16,7 +18,7 @@ const MessageBox = ({ data, selectedUser }) => {
 
   return (
     <div className={container}>
-      <div className="d-flex align-items-center  gap-2">
+      <div className="d-flex align-items-center gap-2">
         <div className={avatar}>
           <span>
             <FaUser size={35} />
@@ -27,11 +29,20 @@ const MessageBox = ({ data, selectedUser }) => {
             <div className="fs-5 text-black">{data.content}</div>
           </div>
           <div className="d-flex align-items-center gap-1">
-            <div className="fs-6 text-black">{isOwn?"You":`${selectedUser.firstName} ${selectedUser.lastName}`}</div>
+          <div className="fs-6 text-black">
+              {isOwn ? "You" : `${selectedUser.firstName} ${selectedUser.lastName}`}
+            </div>
             {data.createdAt && (
-              <div className="fs-6 text-black-50 ">
+              <div className="fs-6 text-black-50">
                 {format(parseISO(data.createdAt), 'h:mm a')}
               </div>
+            )}
+            {/* Add MessageStatus component only for own messages */}
+            {isOwn && (
+              <MessageStatus
+                status={data.status}
+                isOwnMessage={true}
+              />
             )}
           </div>
         </div>

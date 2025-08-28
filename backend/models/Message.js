@@ -29,11 +29,21 @@ const messageSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  readAt: Date,
-  editedAt: Date,
+  readAt: {
+    type: Date
+  },
   isDeleted: {
     type: Boolean,
     default: false
+  },
+  editedAt: {
+    type: Date
+  },
+  // Add message status field
+  status: {
+    type: String,
+    enum: ['sent', 'delivered', 'read'],
+    default: 'sent'
   }
 }, {
   timestamps: true

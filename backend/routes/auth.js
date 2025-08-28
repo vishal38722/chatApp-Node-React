@@ -169,10 +169,13 @@ router.post('/login', async (req, res) => {
 router.post('/logout', authenticateToken, async (req, res) => {
   try {
     // Update user status
-    await User.findByIdAndUpdate(req.user._id, {
-      isOnline: false,
-      lastSeen: new Date()
-    });
+    await User.findByIdAndUpdate(req.user._id, 
+      {
+        isOnline: false,
+        lastSeen: new Date()
+      }, 
+      { new: true }
+    );
 
     res.json({ message: 'Logout successful' });
   } catch (error) {

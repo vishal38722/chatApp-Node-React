@@ -7,7 +7,7 @@ import Loader from "./Loader";
 import axios from "axios";
 import toast from "react-hot-toast";
 
-const ChatBox = ({ selectedUser, onUserClick, socket }) => {
+const ChatBox = ({ selectedUser,  onUserClick,  currentUser,  sendMessage,  markMessagesAsRead,  isUserOnline }) => {
   const [newMessage, setNewMessage] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -50,30 +50,89 @@ const ChatBox = ({ selectedUser, onUserClick, socket }) => {
     }
   };
 
-
   useEffect(() => {
     if (selectedUser) {
       fetchMessages();
     }
   }, [selectedUser]);
 
+  // Listen for socket events via custom events
   useEffect(() => {
-    if (socket) {
-      socket.on("receive_message", (message) => {
-        setMessages((prev) => [...prev, message]);
+    // const handleNewMessage = (event) => {
+    //   const message = event.detail;
+    //   setMessages(prev => [...prev, message]);
+    //   scrollToBottom();
+    // };
+    // updated handleNewMessage method for realTime new message population when receiver has already opened sender's chat - start
+    const handleNewMessage = (event) => {
+      const message = event.detail;
+      console.log("Inside handleNewMessage (event) : ", event);
+      const currentChatId = [currentUser.id, selectedUser.id].sort().join('_');
+      // console.log("message inside ChatBox.js (handleNewMessage) : ", message);
+      // console.log("message.receiver._id : ", message.receiver._id);
+      // console.log("message.sender._id : ", message.sender._id);
+      // console.log("currentUser.id : ", currentUser.id);
+      // console.log("selectedUser.id : ", selectedUser.id);
+    
+      // Show only if current user is the receiver of the message
+      // to remove this ew need to use socket.broadcast.to() instead of io.to() so that the message will be broadcasted to everyone except
+      // the sender and we do not need to put this check here, but for now we are doing io.to() in /send route so to access socket, we need
+      // to transfer socket related implementation inside io.on('connection', (socket) => {}) - which will require emitting send_message
+      // socket event from frontend
+      if (message.receiver._id === currentUser.id) {
+        // seems here we should emit message_read event
+        setMessages(prev => [...prev, message]);
         scrollToBottom();
-      });
+      }
+    };
+    // updated handleNewMessage method for realTime new message population when receiver has already opened sender's chat - start
+    
 
-      socket.on("message_error", (error) => {
-        toast.error(error.error);
-      });
+    const handleStatusUpdate = (event) => {
+      const { messageId, status } = event.detail;
+      setMessages(prev => prev.map(msg => 
+        msg._id === messageId ? { ...msg, status } : msg
+      ));
+    };
 
-      return () => {
-        socket.off("receive_message");
-        socket.off("message_error");
-      };
+    const handleMessagesRead = (event) => {
+      const { chatId } = event.detail;
+      const currentChatId = selectedUser && currentUser ? 
+        [currentUser.id, selectedUser.id].sort().join('_') : null;
+      
+      if (chatId === currentChatId) {
+        setMessages(prev => prev.map(msg => 
+          msg.sender._id === currentUser.id && msg.status !== 'read'
+            ? { ...msg, status: 'read' }
+            : msg
+        ));
+      }
+    };
+
+    window.addEventListener('new_message', handleNewMessage);
+    window.addEventListener('message_status_update', handleStatusUpdate);
+    window.addEventListener('messages_marked_read', handleMessagesRead);
+
+    return () => {
+      window.removeEventListener('new_message', handleNewMessage);
+      window.removeEventListener('message_status_update', handleStatusUpdate);
+      window.removeEventListener('messages_marked_read', handleMessagesRead);
+    };
+  }, [selectedUser, currentUser]);
+
+  // Mark messages as read when chat is opened
+  useEffect(() => {
+    if (selectedUser && currentUser && messages.length > 0) {
+      const unreadMessages = messages.filter(msg => 
+        msg.receiver._id === currentUser.id && msg.status !== 'read'
+      );
+
+      if (unreadMessages.length > 0) {
+        const chatId = [currentUser.id, selectedUser.id].sort().join('_');
+        markMessagesAsRead(chatId, selectedUser.id);
+      }
     }
-  }, [socket]);
+  }, [selectedUser, currentUser, messages, markMessagesAsRead]);
 
   useEffect(() => {
     console.log("message in useEffect : ", messages);
@@ -81,53 +140,39 @@ const ChatBox = ({ selectedUser, onUserClick, socket }) => {
   }, [messages]);
 
   const handleSendMessage = async (e) => {
-  e.preventDefault();
-  const trimmed = newMessage.trim();
-  if (!trimmed || !selectedUser) return;
+    e.preventDefault();
+    const trimmed = newMessage.trim();
+    if (!trimmed || !selectedUser) return;
 
-  try {
-    const token = localStorage.getItem("token");
-    const decoded = jwtDecode(token);
-    const userId = decoded.userId;
+    try {
+      const chatId = [currentUser.id, selectedUser.id].sort().join("_");
+      
+      const messageData = {
+        receiverId: selectedUser.id,
+        content: trimmed,
+        chatId,
+      };
 
-    const chatId = [userId, selectedUser.id].sort().join("_");
-    console.log("chatId in handleSendMessage:", chatId);
+      const savedMessage = await sendMessage(messageData);
+      setMessages(prev => [...prev, savedMessage]);
+      setNewMessage("");
+      scrollToBottom();
 
-    const payload = {
-      receiverId: selectedUser.id,
-      content: trimmed,
-      chatId,
-    };
-    console.log("selectedUser.id in handleSendMessage:", selectedUser.id);
-    console.log("trimmed in handleSendMessage:", trimmed);
-
-    const { data } = await axios.post("http://localhost:8000/api/chat/send", payload, {
-      headers: { Authorization: `Token ${token}` },
-    });
-    console.log("data in handleSendMessage:", data);
-
-    const savedMessage = data.data;
-
-    // Add to chat immediately with full timestamp
-    setMessages((prev) => [...prev, savedMessage]);
-
-    // Broadcast to other user via socket
-    socket.emit("send_message", savedMessage);
-
-    setNewMessage("");
-    scrollToBottom();
-  } catch (err) {
-    console.error("Failed to send message:", err);
-    toast.error("Failed to send message");
-  }
-};
-
+    } catch (err) {
+      console.error("Failed to send message:", err);
+      toast.error("Failed to send message");
+    }
+  };
 
   if (loading) return <Loader />;
 
   return (
     <div style={{ width: "inherit" }}>
-      <Header selectedUser={selectedUser} onUserClick={onUserClick} />
+      <Header 
+        selectedUser={selectedUser} 
+        onUserClick={onUserClick} 
+        isUserOnline={isUserOnline}
+      />
       <div
         style={{
           paddingBottom: "7rem",
@@ -154,11 +199,19 @@ const ChatBox = ({ selectedUser, onUserClick, socket }) => {
             <input
               type="text"
               className="form-control p-3"
-              placeholder="Type your message..."
+              placeholder={
+                isUserOnline 
+                  ? "Type your message..." 
+                  : `${selectedUser.firstName} is offline. Type your message...`
+              }
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
             />
-            <button className="btn btn-primary btn-lg pb-3 mb-3" type="submit">
+            <button 
+              className="btn btn-primary btn-lg pb-3 mb-3" 
+              type="submit"
+              title={isUserOnline ? "Send message" : "User is offline - message will be delivered when they come online"}
+            >
               <HiPaperAirplane />
             </button>
           </form>

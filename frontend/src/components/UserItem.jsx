@@ -1,7 +1,7 @@
 import React from 'react' 
 import { FaUser } from "react-icons/fa";
 
-const UserItem = ({user, onUserClick}) => {
+const UserItem = ({user, onUserClick, isOnline, selectedUser}) => {
 
 
   return (

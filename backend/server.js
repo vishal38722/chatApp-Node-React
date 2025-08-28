@@ -12,6 +12,7 @@ const chatRoutes = require('./routes/chat');
 const userRoutes = require('./routes/user');
 const homePageRoutes = require('./routes/index');
 const { authenticateSocket } = require('./middleware/socketAuth');
+const Message = require('./models/Message');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,7 +24,10 @@ const io = socketIo(server, {
   }
 });
 
-// Track online users
+// Make io available to routes (so /api/chat/send can emit after DB save)
+app.set('io', io);
+
+// Track online users (Set of userIds)
 const onlineUsers = new Set();
 
 // Middleware
@@ -60,7 +64,7 @@ app.use('/', homePageRoutes);
 // Socket.io connection handling
 io.use(authenticateSocket);
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log('User connected:', socket.userId);
   
   // Join user to their personal room
@@ -69,10 +73,39 @@ io.on('connection', (socket) => {
   // Track online status
   onlineUsers.add(socket.userId);
   socket.broadcast.emit('user_online', { userId: socket.userId });
+
+  // when user comes online the below code checks for messages where receiver is the current user and messages are in sent state and 
+  // mark those messages as delivered
+  try {
+    const undeliveredMessages = await Message.find({
+      receiver: socket.userId,
+      status: 'sent'
+    });
+
+    if (undeliveredMessages.length > 0) {
+      console.log(`Marking ${undeliveredMessages.length} messages as delivered for user ${socket.userId}`);
+
+      // Update status in DB
+      await Message.updateMany(
+        { receiver: socket.userId, status: 'sent' },
+        { $set: { status: 'delivered' } }
+      );
+
+      // Notify all senders
+      undeliveredMessages.forEach((msg) => {
+        io.to(msg.sender.toString()).emit('message_status_update', {
+          messageId: msg._id,
+          status: 'delivered'
+        });
+      });
+    }
+  } catch (err) {
+    console.error("Error updating undelivered messages:", err);
+  }
   
   // Handle joining chat rooms
   socket.on('join_chat', (data) => {
-    const { chatId, receiverId } = data;
+    const chatId = data;
     socket.join(chatId);
     console.log(`User ${socket.userId} joined chat ${chatId}`);
   });
@@ -80,7 +113,9 @@ io.on('connection', (socket) => {
   // Handle sending messages
   socket.on('send_message', async (data) => {
     try {
+      console.log("inside send_message event socket listener");
       const { chatId, message, receiverId } = data;
+      console.log("message : ", message);
       
       // Validation
       if (!chatId || !message?.trim() || !receiverId) {
@@ -101,7 +136,7 @@ io.on('connection', (socket) => {
       }
       
       // Save message to database
-      const Message = require('./models/Message');
+      // const Message = require('./models/Message');
       const newMessage = new Message({
         sender: socket.userId,
         receiver: receiverId,
@@ -109,25 +144,27 @@ io.on('connection', (socket) => {
         chatId: chatId,
         timestamp: new Date()
       });
+
+      console.log("newMessage : ", newMessage);
       
-      await newMessage.save();
+      // await newMessage.save(); -- this is being saved in /send route
       await newMessage.populate('sender', 'firstName lastName email');
       
-      // Emit to chat room
-      io.to(chatId).emit('receive_message', {
-        _id: newMessage._id,
-        sender: newMessage.sender,
-        content: newMessage.content,
-        timestamp: newMessage.timestamp,
-        chatId: chatId
-      });
+      // Emit to chat room -- this is being saved in /send route
+      // io.to(chatId).emit('receive_message', {
+      //   _id: newMessage._id,
+      //   sender: newMessage.sender,
+      //   content: newMessage.content,
+      //   timestamp: newMessage.timestamp,
+      //   chatId: chatId
+      // });
       
-      // Emit notification to receiver if they're online
-      io.to(receiverId).emit('new_message_notification', {
-        from: `${newMessage.sender.firstName} ${newMessage.sender.lastName}`,
-        message: newMessage.content,
-        chatId: chatId
-      });
+      // // Emit notification to receiver if they're online -- this is being saved in /send route
+      // io.to(receiverId).emit('new_message_notification', {
+      //   from: `${newMessage.sender.firstName} ${newMessage.sender.lastName}`,
+      //   message: newMessage.content,
+      //   chatId: chatId
+      // });
       
     } catch (error) {
       console.error('Error sending message:', error);
@@ -152,6 +189,55 @@ io.on('connection', (socket) => {
   // Handle getting online users
   socket.on('get_online_users', () => {
     socket.emit('online_users', { users: Array.from(onlineUsers) });
+  });
+
+  // Mark message as delivered manually (in case we need to force update)
+  socket.on('message_delivered', async (data) => {
+    try {
+      const { messageId, senderId } = data;
+
+      await Message.findByIdAndUpdate(messageId, { status: 'delivered' });
+
+      // Notify sender
+      io.to(senderId).emit('message_status_update', {
+        messageId,
+        status: 'delivered'
+      });
+    } catch (error) {
+      console.error('Error marking message delivered:', error);
+    }
+  });
+
+  // Handle message read status
+  socket.on('messages_read', async (data) => {
+    try {
+      const { chatId, userId, senderId } = data;
+      
+      // Update messages to read status
+      const result = await Message.updateMany(
+        {
+          chatId: chatId,
+          receiver: userId,
+          status: { $ne: 'read' }
+        },
+        {
+          status: 'read',
+          isRead: true,
+          readAt: new Date()
+        }
+      );
+
+      if (result.modifiedCount > 0) {
+        // Notify sender about read status
+        io.to(senderId).emit('messages_marked_read', {
+          chatId: chatId,
+          count: result.modifiedCount
+        });
+      }
+
+    } catch (error) {
+      console.error('Mark messages read error:', error);
+    }
   });
   
   socket.on('disconnect', () => {
